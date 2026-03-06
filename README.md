@@ -10,13 +10,12 @@ Instagram Cookies (в формате Netscape)
 
 🛠 Установка на VPS (Ubuntu/Debian)
 1. Подготовка системы
-
 Обновите пакеты и установите FFmpeg:
 
 Bash
 sudo apt update && sudo apt install ffmpeg python3-pip python3-venv -y
-2. Клонирование и настройка
 
+2. Клонирование и настройка
 Создайте папку проекта и настройте виртуальное окружение:
 
 Bash
@@ -24,8 +23,8 @@ mkdir media_proxy_bot && cd media_proxy_bot
 python3 -m venv venv
 source venv/bin/activate
 pip install aiogram yt-dlp
-3. Файлы проекта
 
+3. Файлы проекта
 Поместите в папку /home/USER/media_proxy_bot следующие файлы:
 
 media_proxy_bot.py (сам код бота)
