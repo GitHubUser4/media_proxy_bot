@@ -7,8 +7,16 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from yt_dlp import YoutubeDL
 
-# Настройка логирования, чтобы видеть ошибки в консоли
-# logging.basicConfig(level=logging.INFO)
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("proxy_bot.log"), # Запись в файл
+        logging.StreamHandler()              # Вывод в консоль (для удобства)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # --- НАСТРОЙКИ ---
 load_dotenv()
@@ -69,6 +77,9 @@ async def handle_instagram(message: types.Message):
     status = await message.answer("📥 Начинаю работу...")
     
     try:
+        # Логируем начало работы
+        logger.info(f"User {message.from_user.id} sent link: {url}")
+        
         loop = asyncio.get_event_loop()
         
         # 1. Загрузка
@@ -90,7 +101,9 @@ async def handle_instagram(message: types.Message):
             if os.path.exists(f): os.remove(f)
 
     except Exception as e:
-        await message.answer("❌ Ошибка. Возможно, видео слишком длинное или профиль закрыт.")
+        # Это запишет подробности ошибки в proxy_bot.log
+        logger.exception(f"Error processing link {url} from user {message.from_user.id}")
+        await message.answer("⚠️ Произошла внутренняя ошибка. Мы уже работаем над этим.")
     finally:
         await status.delete()
 
