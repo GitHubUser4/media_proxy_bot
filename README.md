@@ -1,4 +1,4 @@
-🤖 Instagram Media Proxy Bot
+🤖 Media Proxy Bot
 Telegram-бот для автоматического скачивания, сжатия и пересылки видео из Instagram (Reels, Posts) в чат.
 
 📋 Требования
@@ -20,13 +20,13 @@ sudo apt update && sudo apt install ffmpeg python3-pip python3-venv -y
 Создайте папку проекта и настройте виртуальное окружение:
 
 Bash
-mkdir insta_bot && cd insta_bot
+mkdir media_proxy_bot && cd media_proxy_bot
 python3 -m venv venv
 source venv/bin/activate
 pip install aiogram yt-dlp
 3. Файлы проекта
 
-Поместите в папку /home/USER/insta_bot следующие файлы:
+Поместите в папку /home/USER/media_proxy_bot следующие файлы:
 
 media_proxy_bot.py (сам код бота)
 
@@ -40,19 +40,19 @@ instagram_cookies.txt (ваши куки из браузера)
 1. Создайте файл службы
 
 Bash
-sudo nano /etc/systemd/system/instabot.service
+sudo nano /etc/systemd/system/media_proxy_bot.service
 2. Вставьте следующее содержимое (замените USER на ваше имя пользователя):
 
 Ini, TOML
 [Unit]
-Description=Instagram Media Proxy Telegram Bot
+Description=Media Proxy Telegram Bot
 After=network.target
 
 [Service]
 # Путь к папке с ботом
-WorkingDirectory=/home/USER/insta_bot
+WorkingDirectory=/home/USER/media_proxy_bot
 # Путь к python внутри виртуального окружения и путь к скрипту
-ExecStart=/home/USER/insta_bot/venv/bin/python3 /home/USER/insta_bot/media_proxy_bot.py
+ExecStart=/home/USER/media_proxy_bot/venv/bin/python3 /home/USER/media_proxy_bot/media_proxy_bot.py
 Restart=always
 RestartSec=5
 User=USER
@@ -65,13 +65,13 @@ WantedBy=multi-user.target
 
 Bash
 sudo systemctl daemon-reload      # Обновить список служб
-sudo systemctl enable instabot    # Включить автозапуск при старте системы
-sudo systemctl start instabot     # Запустить бота прямо сейчас
+sudo systemctl enable media_proxy_bot    # Включить автозапуск при старте системы
+sudo systemctl start media_proxy_bot     # Запустить бота прямо сейчас
 📝 Полезные команды
 Проверить статус бота:
 
 Bash
-sudo systemctl status instabot
+sudo systemctl status media_proxy_bot
 Посмотреть логи (в реальном времени):
 
 Bash
@@ -79,7 +79,7 @@ tail -f bot_log.txt
 Перезапустить бота (после обновления кода или куков):
 
 Bash
-sudo systemctl restart instabot
+sudo systemctl restart media_proxy_bot
 ⚠️ Решение проблем
 Ошибка "Login Required": Обновите файл instagram_cookies.txt (экспортируйте новые куки из браузера).
 
