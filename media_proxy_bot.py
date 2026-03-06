@@ -8,7 +8,7 @@ from aiogram.filters import Command
 from yt_dlp import YoutubeDL
 
 # Настройка логирования, чтобы видеть ошибки в консоли
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
 
 # --- НАСТРОЙКИ ---
 load_dotenv()
