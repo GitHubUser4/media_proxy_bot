@@ -170,7 +170,6 @@ async def download_insta_media_playwright(url, temp_dir):
                 # 2. Ждем, когда сетевая активность утихнет (все картинки/скрипты догрузятся)
                 try:
                     await page.wait_for_load_state("networkidle", timeout=10000)
-                    await page.wait_for_selector("video, article img", timeout=5000)
                     # Даем немного времени на прогрузку скриптов
                     await asyncio.sleep(5) 
                     # Определяем путь в корне проекта, а не в temp
@@ -179,7 +178,8 @@ async def download_insta_media_playwright(url, temp_dir):
                     # ... после page.goto(url) и ожидания ...
                     await page.screenshot(path=debug_screenshot_path, full_page=True)
                     logger.info(f"📸 Скриншот для отладки обновлен: {debug_screenshot_path}")
-                            except:
+                    await page.wait_for_selector("video, article img", timeout=5000)
+                except:
                     logger.warning("Контент не появился по селектору или сеть не затихла, пробуем так.")
 
                 # 1. ПРОВЕРКА НА ВИДЕО
