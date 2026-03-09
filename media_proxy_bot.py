@@ -140,12 +140,24 @@ async def download_insta_media_playwright(url, temp_dir):
 
             # --- ЛОВЕЦ ВИДЕО (Network Interception) ---
             caught_video_url = None
+# --- УЛУЧШЕННЫЙ ЛОВЕЦ ВИДЕО ---
+            caught_video_url = None
             async def handle_response(response):
                 nonlocal caught_video_url
+                # Проверяем, что это медиа или типичный для инсты поток
                 if response.request.resource_type in ["media", "fetch", "xhr"]:
-                    if "video/mp4" in response.headers.get("content-type", "") or ".mp4" in response.url:
-                        if "vp/" in response.url or "scontent" in response.url:
-                            if not caught_video_url:
+                    content_type = response.headers.get("content-type", "").lower()
+                    
+                    if "video/mp4" in content_type or ".mp4" in response.url:
+                        # ПРОВЕРКА НА РАЗМЕР: Пропускаем сегменты инициализации (обычно < 2000 байт)
+                        try:
+                            size = int(response.headers.get("content-length", 0))
+                            if size > 50000:  # Берем только то, что больше 50 КБ
+                                caught_video_url = response.url
+                                logger.info(f"✅ Поймано реальное видео: {size} байт")
+                        except:
+                            # Если размера нет в заголовках, просто не берем первый попавшийся
+                            if not caught_video_url and "bytestart" not in response.url:
                                 caught_video_url = response.url
 
             context.on("response", handle_response)
@@ -164,11 +176,11 @@ async def download_insta_media_playwright(url, temp_dir):
                 # 1. ПРОВЕРКА НА ВИДЕО
                 video_element = await page.query_selector("video")
                 if video_element or caught_video_url:
-                    logger.info("Playwright: Это видео! Перехватываю mp4...")
-                    # Даем сети пару секунд, чтобы точно поймать прямую ссылку
-                    for _ in range(6):
+                    logger.info("Playwright: Видео в поле зрения. Ждем поток данных...")
+                    # Ждем чуть дольше и проверяем, поймали ли мы что-то весомое
+                    for _ in range(10): 
                         if caught_video_url: break
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(1) # Ждем до 10 секунд появления живой ссылки
                     
                     video_src = caught_video_url or await video_element.get_attribute("src")
                     
