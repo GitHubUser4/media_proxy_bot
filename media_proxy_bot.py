@@ -6,6 +6,8 @@ import shutil
 import requests
 import time
 import subprocess
+import json
+import re
 from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router, types, F
@@ -47,32 +49,46 @@ bot = Bot(token=api_key)
 dp = Dispatcher()
 
 # --- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def fix_video_for_telegram(input_path):
-    output_path = input_path.replace(".mp4", "_processed.mp4")
-    
-    # Если расширение было не mp4, заменим его принудительно для вывода
-    if not output_path.endswith("_processed.mp4"):
-        output_path = os.path.splitext(input_path)[0] + "_processed.mp4"
+def get_video_dimensions(file_path):
+    """Возвращает (width, height) видеофайла"""
+    cmd = [
+        'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+        '-show_streams', file_path
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'video':
+                return int(stream.get('width')), int(stream.get('height'))
+    except Exception as e:
+        logger.error(f"Ошибка ffprobe: {e}")
+    return None, None
 
+def fix_video_for_telegram(input_path, output_path):
+    """Исправляет пропорции видео и удаляет метаданные для Telegram"""
     command = [
         'ffmpeg', '-y', '-i', input_path,
+        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1', 
         '-vcodec', 'libx264', 
-        '-crf', '28', 
+        '-crf', '30', 
         '-preset', 'superfast', 
         '-pix_fmt', 'yuv420p',
-        '-acodec', 'aac', '-b:a', '128k',
+        '-map_metadata', '-1', 
+        '-acodec', 'aac', '-b:a', '96k',
         '-movflags', '+faststart',
         output_path
     ]
     
     try:
-        logger.info(f"🛠 FFmpeg: Начинаю перекодирование {input_path} -> {output_path}")
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        logger.info(f"✅ FFmpeg завершен успешно!")
+        logger.info(f"🛠 FFmpeg: Начинаю обработку {input_path}")
+        # Оставляем только один запуск!
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        logger.info(f"✅ FFmpeg завершен: {output_path}")
         return output_path
     except Exception as e:
-        logger.error(f"❌ Ошибка в fix_video_for_telegram: {e}")
-        return input_path
+        logger.error(f"❌ Ошибка в FFmpeg: {e}")
+        return input_path # Если не вышло, вернем оригинал
     
 def clean_url(raw_url):
     """Удаляет мусорные параметры из ссылки"""
@@ -89,63 +105,22 @@ def get_dict_cookies():
 # --- 4. ЛОГИКА ЗАГРУЗКИ ---
 
 def download_content(url, temp_path):
-    """План А: Быстрая загрузка через yt-dlp с приоритетом видео"""
+    """План А: Максимально надежная загрузка через движок yt-dlp"""
     ydl_opts = {
+        # Ищем лучшее видео в mp4 и лучшее аудио в m4a, склеиваем в mp4
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        # Шаблон имени: media_ID.extension внутри нашей временной папки
+        'outtmpl': os.path.join(temp_path, 'media_%(id)s.%(ext)s'),
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'cookiesfrombrowser': ('chrome',),
         'quiet': True,
         'no_warnings': True,
-        'ignore_no_formats_error': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'merge_output_format': 'mp4',
     }
 
     with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        targets = info['entries'] if 'entries' in info else [info]
-
-        for index, item in enumerate(targets):
-            media_url = None
-            is_video = False
-
-            # 1. Жесткий приоритет видео-форматам
-            if item.get('formats'):
-                videos = [f for f in item['formats'] if f.get('vcodec') != 'none' and f.get('url')]
-                if videos:
-                    media_url = videos[-1].get('url')
-                    is_video = True
-            
-            # 2. Если не видео, берем url или display_resources
-            if not media_url:
-                media_url = item.get('url')
-                is_video = item.get('ext') == 'mp4' or item.get('vcodec') not in ['none', None]
-
-            if not media_url and item.get('display_resources'):
-                media_url = item['display_resources'][-1].get('src')
-                is_video = False
-                
-            if not media_url:
-                media_url = item.get('thumbnail')
-                is_video = False
-
-            if media_url:
-                # Финальная проверка по ссылке
-                if '.mp4' in media_url:
-                    is_video = True
-                    
-                ext = 'mp4' if is_video else 'jpg'
-                file_path = os.path.join(temp_path, f"media_{index}.{ext}")
-                
-                headers = {'User-Agent': ydl_opts['user_agent'], 'Referer': 'https://www.instagram.com/'}
-                resp = requests.get(media_url, headers=headers, stream=True, timeout=20)
-                
-                if resp.status_code == 200:
-                    with open(file_path, 'wb') as f:
-                        for chunk in resp.iter_content(8192): f.write(chunk)
-                else:
-                    logger.error(f"Ошибка загрузки {ext}: статус {resp.status_code}")
-
-        if not os.listdir(temp_path):
-            raise Exception("yt-dlp: Медиафайлы не найдены.")
+        # download=True дает команду yt-dlp сразу сохранить файл на диск
+        info = ydl.extract_info(url, download=True)
         return info
 
 async def download_insta_media_playwright(url, temp_dir):
@@ -177,8 +152,14 @@ async def download_insta_media_playwright(url, temp_dir):
             page = await context.new_page()
 
             try:
+                # 1. Загружаем структуру страницы
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(5) 
+                # 2. Ждем, когда сетевая активность утихнет (все картинки/скрипты догрузятся)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                    await page.wait_for_selector("video, article img", timeout=5000)
+                except:
+                    logger.warning("Контент не появился по селектору или сеть не затихла, пробуем так.")
 
                 # 1. ПРОВЕРКА НА ВИДЕО
                 video_element = await page.query_selector("video")
@@ -283,11 +264,13 @@ async def session_keep_alive():
 # --- 6. ОБРАБОТЧИК СООБЩЕНИЙ ---
 
 @dp.message(F.text.contains("instagram.com"))
-
 async def handle_instagram(message: types.Message):
-    """Основной обработчик ссылок Instagram"""
-    # Очищаем ссылку от мусора перед работой!
-    raw_url = message.text.strip()
+    # Ищем ссылку внутри текста с помощью регулярного выражения
+    url_match = re.search(r'(https?://[^\s]+)', message.text)
+    if not url_match:
+        return
+    
+    raw_url = url_match.group(1)
     url = clean_url(raw_url)
     
     status_msg = await message.answer("🚀 Танк поехал за медиа...")
@@ -298,19 +281,25 @@ async def handle_instagram(message: types.Message):
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
-        # План А: Пытаемся скачать через yt-dlp
-        try:
-            await status_msg.edit_text("🔍 Пробую быстрый метод (yt-dlp)...")
-            # Мы используем run_in_executor, чтобы не блокировать бота во время скачивания
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, download_content, url, temp_dir)
-        except Exception as e:
-            logger.warning(f"План А не сработал: {e}. Перехожу к Плану Б...")
-            # План Б: Playwright (браузер)
-            await status_msg.edit_text("🌐 План А мимо. Запускаю браузер (Playwright)...")
-            files_from_pw = await download_insta_media_playwright(url, temp_dir)
-            if not files_from_pw:
-                raise Exception("Ни один метод не смог достать медиа.")
+# План А: Пытаемся скачать через yt-dlp (с 2 попытками)
+        success = False
+        for attempt in range(1, 3):
+            try:
+                await status_msg.edit_text(f"🔍 Пробую быстрый метод... (Попытка {attempt})")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, download_content, url, temp_dir)
+                success = True
+                break # Если скачалось — выходим из цикла попыток
+            except Exception as e:
+                logger.warning(f"Попытка {attempt} не удалась: {e}")
+                if attempt == 1: await asyncio.sleep(2) # Пауза перед второй попыткой
+
+            if not success:
+                # Только если План А провалился дважды — идем в План Б
+                await status_msg.edit_text("🌐 План А мимо. Запускаю браузер (Playwright)...")
+                files_from_pw = await download_insta_media_playwright(url, temp_dir)
+                if not files_from_pw:
+                    raise Exception("Ни один метод не смог достать медиа.")
 
        # --- Проверяем, что скачалось ---
         downloaded_files = os.listdir(temp_dir)
@@ -327,11 +316,19 @@ async def handle_instagram(message: types.Message):
         for file_name in downloaded_files:
             input_path = os.path.join(temp_dir, file_name)
             
-            # Проверяем расширение (игнорируя регистр)
             if file_name.lower().endswith(('.mp4', '.mov', '.m4v')):
                 logger.info(f"🎯 Найдено видео: {file_name}. Запускаю фикс...")
-                # Запускаем нашу «золотую» функцию из старого бота
-                fixed_path = await loop.run_in_executor(None, fix_video_for_telegram, input_path)
+                
+                # Создаем имя для обработанного файла
+                output_path = os.path.join(temp_dir, f"fixed_{file_name}")
+                
+                # ПЕРЕДАЕМ ОБА АРГУМЕНТА (input_path и output_path)
+                fixed_path = await loop.run_in_executor(
+                    None, 
+                    fix_video_for_telegram, 
+                    input_path, 
+                    output_path
+                )
                 processed_paths.append(fixed_path)
             else:
                 logger.info(f"📷 Это не видео, пропускаю фикс: {file_name}")
@@ -343,8 +340,11 @@ async def handle_instagram(message: types.Message):
         if len(processed_paths) == 1:
             file_path = processed_paths[0]
             if file_path.lower().endswith('.mp4'):
+                w, h = get_video_dimensions(file_path) # Узнаем размеры
                 await message.answer_video(
-                    FSInputFile(file_path), 
+                    FSInputFile(file_path),
+                    width=w, height=h, # ПРЯМО ГОВОРИМ ТЕЛЕГРАМУ РАЗМЕРЫ
+                    supports_streaming=True,
                     caption="Готово! 🎥"
                 )
             else:
@@ -353,13 +353,14 @@ async def handle_instagram(message: types.Message):
                     caption="Готово! 📸"
                 )
         else:
-            # Если файлов несколько, собираем альбом (Media Group)
+            # Если файлов несколько (альбом)
             album = MediaGroupBuilder(caption="Твоя подборка готова!")
-            for path in processed_paths[:10]: # Ограничение Telegram на 10 медиа в группе
+            for path in processed_paths[:10]:
                 if path.lower().endswith('.mp4'):
-                    album.add_video(FSInputFile(path))
+                    w, h = get_video_dimensions(path)
+                    album.add_video(media=FSInputFile(path), width=w, height=h)
                 else:
-                    album.add_photo(FSInputFile(path))
+                    album.add_photo(media=FSInputFile(path))
             
             await message.answer_media_group(album.build())
 
