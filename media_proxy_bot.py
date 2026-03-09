@@ -49,6 +49,34 @@ bot = Bot(token=api_key)
 dp = Dispatcher()
 
 # --- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+def load_cookies_to_context(context, file_path):
+    if not os.path.exists(file_path):
+        logger.error("Файл кук не найден!")
+        return
+    
+    try:
+        # Пробуем прочитать как JSON (если ты их так сохранил)
+        with open(file_path, 'r') as f:
+            cookies = json.load(f)
+            context.add_cookies(cookies)
+    except:
+        # Если не JSON, значит это формат Netscape (текстовый)
+        # Для этого лучше всего использовать yt-dlp, чтобы он их распарсил
+        logger.info("Конвертирую Netscape cookies для Playwright...")
+        from yt_dlp import YoutubeDL
+        ydl = YoutubeDL({'cookiefile': file_path})
+        browser_cookies = []
+        for cookie in ydl.cookiejar:
+            browser_cookies.append({
+                'name': cookie.name,
+                'value': cookie.value,
+                'domain': cookie.domain,
+                'path': cookie.path,
+                'expires': cookie.expires,
+                'secure': cookie.secure
+            })
+        context.add_cookies(browser_cookies)
+
 def get_video_dimensions(file_path):
     """Возвращает (width, height) видеофайла"""
     cmd = [
@@ -171,13 +199,26 @@ async def download_insta_media_playwright(url, temp_dir):
                 try:
                     await page.wait_for_load_state("networkidle", timeout=10000)
                     # Даем немного времени на прогрузку скриптов
-                    await asyncio.sleep(5) 
-                    # Определяем путь в корне проекта, а не в temp
+                    await asyncio.sleep(5)
+                    # 1. Делаем скриншот проблемы (чтобы видеть, было окно или нет)
                     debug_screenshot_path = os.path.join(os.getcwd(), "last_error.png")
-
-                    # ... после page.goto(url) и ожидания ...
                     await page.screenshot(path=debug_screenshot_path, full_page=True)
                     logger.info(f"📸 Скриншот для отладки обновлен: {debug_screenshot_path}")
+
+                    # --- ШАГ 3: ЗАКРЫВАЕМ ОКНО ЛОГИНА (НОВЫЙ КОД) ---
+                    try:
+                        # Ищем кнопку закрытия (крестик) по селектору или aria-label
+                        # Instagram часто меняет классы, поэтому ищем по атрибуту кнопки
+                        close_button = await page.query_selector("div[role='dialog'] button[type='button'] svg[aria-label='Close'], ._xabd button")
+                        if close_button:
+                            await close_button.click()
+                            logger.info("✅ Закрыл всплывающее окно крестиком")
+                            await asyncio.sleep(1) # Даем секунду, чтобы окно исчезло визуально
+                    except Exception as e:
+                        logger.debug(f"Окно закрытия не найдено или не нажалось: {e}")
+                    # -----------------------------------------------
+
+                    # 2. И только теперь ищем контент
                     await page.wait_for_selector("video, article img", timeout=5000)
                 except:
                     logger.warning("Контент не появился по селектору или сеть не затихла, пробуем так.")
