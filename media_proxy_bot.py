@@ -96,23 +96,24 @@ def clean_url(raw_url):
     return urlunparse(parsed._replace(query=""))
 
 def get_dict_cookies():
-    """Синхронная функция для извлечения кук для Playwright"""
-    ydl_opts = {'cookiesfrombrowser': ('chrome',), 'quiet': True}
-    with YoutubeDL(ydl_opts) as ydl:
-        raw_cookies = ydl.cookiejar
-    return [{'name': c.name, 'value': c.value, 'domain': c.domain, 'path': c.path, 'secure': True} for c in raw_cookies]
+    """Безопасное извлечение кук: сначала из браузера, если нет — из файла или пусто"""
+    try:
+        ydl_opts = {'cookiesfrombrowser': ('chrome',), 'quiet': True}
+        with YoutubeDL(ydl_opts) as ydl:
+            raw_cookies = ydl.cookiejar
+        return [{'name': c.name, 'value': c.value, 'domain': c.domain, 'path': c.path, 'secure': True} for c in raw_cookies]
+    except Exception as e:
+        logger.warning(f"Браузер Chrome не найден ({e}), использую только файл кук.")
+        return [] # Возвращаем пустоту, Playwright подхватит куки позже, если нужно
 
 # --- 4. ЛОГИКА ЗАГРУЗКИ ---
 
 def download_content(url, temp_path):
-    """План А: Максимально надежная загрузка через движок yt-dlp"""
     ydl_opts = {
-        # Ищем лучшее видео в mp4 и лучшее аудио в m4a, склеиваем в mp4
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        # Шаблон имени: media_ID.extension внутри нашей временной папки
         'outtmpl': os.path.join(temp_path, 'media_%(id)s.%(ext)s'),
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
-        'cookiesfrombrowser': ('chrome',),
+        # 'cookiesfrombrowser': ('chrome',),  <-- УДАЛИ ЭТУ СТРОКУ
         'quiet': True,
         'no_warnings': True,
         'merge_output_format': 'mp4',
