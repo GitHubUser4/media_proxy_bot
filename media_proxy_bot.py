@@ -122,7 +122,13 @@ async def download_insta_media_playwright(url, temp_dir):
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 await asyncio.sleep(5)
-
+                # --- ПРОВЕРКА АВТОРИЗАЦИИ ---
+                current_url = page.url
+                if "login" in current_url:
+                    logger.error("❌ Куки не сработали: Инстаграм перенаправил на страницу логина")
+                    await browser.close()
+                    return [], "Ошибка авторизации (нужны свежие куки)"
+                # ----------------------------
                 # --- НОВОЕ: ДОСТАЕМ ТЕКСТ ПОСТА ---
                 post_text = ""
                 try:
