@@ -195,9 +195,6 @@ async def download_insta_media_playwright(url, temp_dir):
 # --- 5. ОБРАБОТЧИК СООБЩЕНИЙ ---
 @dp.message(Command("status"))
 async def admin_status(message: Message):
-    # Временный лог в консоль VPS, чтобы увидеть, кто пишет
-    print(f"DEBUG: Получена команда /status от ID {message.from_user.id}")
-    print(f"DEBUG: ID from .env - {admin_id}")
     # Если пишет не админ — полная тишина (бэкдор)
     if message.from_user.id != admin_id:
         return 
