@@ -33,7 +33,7 @@ sudo apt update && sudo apt install ffmpeg python3-pip python3-venv -y
 mkdir media_proxy_bot && cd media_proxy_bot
 python3 -m venv venv
 source venv/bin/activate
-pip install aiogram yt-dlp python-dotenv
+pip install aiogram yt-dlp python-dotenv psutil
 
 ```
 

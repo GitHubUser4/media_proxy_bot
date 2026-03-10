@@ -8,8 +8,11 @@ import time
 import subprocess
 import json
 import re
+import psutil
+import platform
 from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
+from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.types import FSInputFile, InputMediaPhoto, Message
 from aiogram.filters import Command
@@ -20,6 +23,7 @@ from yt_dlp import YoutubeDL
 # --- 1. ЗАГРУЗКА КОНФИГУРАЦИИ ---
 load_dotenv()
 api_key = os.getenv("API_TOKEN")
+admin_id = int(os.getenv("ADMIN_ID", 0))
 COOKIE_FILE = "instagram_cookies.txt"
 TEMP_BASE_DIR = "downloads"
 LOG_FILE = "proxy_bot.log"
@@ -48,7 +52,6 @@ bot = Bot(token=api_key)
 dp = Dispatcher()
 
 # --- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
 async def load_cookies_to_context(context, file_path):
     if not os.path.exists(file_path): return
     try:
@@ -190,7 +193,37 @@ async def download_insta_media_playwright(url, temp_dir):
                 return [], ""
 
 # --- 5. ОБРАБОТЧИК СООБЩЕНИЙ ---
+@dp.message(Command("status"))
+async def admin_status(message: Message):
+    # Временный лог в консоль VPS, чтобы увидеть, кто пишет
+    print(f"DEBUG: Получена команда /status от ID {message.from_user.id}")
+    print(f"DEBUG: ID from .env - {admin_id}")
+    # Если пишет не админ — полная тишина (бэкдор)
+    if message.from_user.id != admin_id:
+        return 
 
+    # Проверка кук
+    cookie_info = "❌ Файл не найден"
+    if os.path.exists(COOKIE_FILE):
+        mtime = os.path.getmtime(COOKIE_FILE)
+        # Показывает дату последнего изменения файла
+        dt = datetime.fromtimestamp(mtime).strftime('%d.%m %H:%M')
+        cookie_info = f"✅ Обновлены: {dt}"
+
+    # Ресурсы сервера
+    ram = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    status_text = (
+        "<b>🛠 Системный статус:</b>\n\n"
+        f"<b>🍪 Куки:</b> {cookie_info}\n"
+        f"<b>🧠 RAM:</b> {ram.percent}% ({ram.used // (1024**2)}MB)\n"
+        f"<b>💾 Диск:</b> {disk.free // (1024**3)}GB свободно\n"
+        f"<b>🕒 Время VPS:</b> {datetime.now().strftime('%H:%M:%S')}"
+    )
+
+    await message.answer(status_text, parse_mode="HTML")
+    
 @dp.message(F.text.contains("instagram.com"))
 async def handle_instagram(message: types.Message):
     url_match = re.search(r'(https?://[^\s]+)', message.text)
