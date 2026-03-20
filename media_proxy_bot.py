@@ -206,6 +206,12 @@ async def handle_insta(msg: Message):
                     await asyncio.sleep(2)
 
         await status.delete()
+    except Exception as e:
+        await status.edit_text(f"❌ {str(e)[:50]}")
+    finally:
+        # Очистка через 2 минуты
+        async def cleanup(): await asyncio.sleep(120); shutil.rmtree(t_dir, ignore_errors=True)
+        asyncio.create_task(cleanup())
 
 async def main():
     os.makedirs(TEMP_BASE_DIR, exist_ok=True)
