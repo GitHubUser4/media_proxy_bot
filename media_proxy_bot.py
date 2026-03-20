@@ -161,8 +161,10 @@ async def handle_insta(msg: Message):
 
         if not final_media: raise Exception("Файлы слишком тяжелые для TG.")
 
-        # Отправка
+# --- ОТПРАВКА ---
         caption = (caption or "")[:1024]
+
+        # 1. Если файл всего один — отправляем как обычно
         if len(final_media) == 1:
             f = final_media[0]
             if f.endswith('.mp4'):
@@ -170,22 +172,40 @@ async def handle_insta(msg: Message):
                 await msg.answer_video(FSInputFile(f), caption=caption, width=w, height=h, supports_streaming=True)
             else:
                 await msg.answer_photo(FSInputFile(f), caption=caption)
+        
+        # 2. Если файлов много — бьем на чанки по 10 штук
         else:
-            alb = MediaGroupBuilder(caption=caption)
-            for f in final_media[:10]:
-                if f.endswith('.mp4'):
-                    w, h = get_media_meta(f)
-                    alb.add_video(media=FSInputFile(f), width=w, height=h)
-                else: alb.add_photo(media=FSInputFile(f))
-            await msg.answer_media_group(alb.build())
+            # Генератор чанков (режет список по 10 элементов)
+            chunks = [final_media[i:i + 10] for i in range(0, len(final_media), 10)]
+
+            for index, chunk in enumerate(chunks):
+                # Текст (caption) прикрепляем только к самому первому чанку
+                current_caption = caption if index == 0 else ""
+                
+                # Если в чанке остался 1 файл (например, 11-й файл в карусели)
+                if len(chunk) == 1:
+                    f = chunk[0]
+                    if f.endswith('.mp4'):
+                        w, h = get_media_meta(f)
+                        await msg.answer_video(FSInputFile(f), caption=current_caption, width=w, height=h)
+                    else:
+                        await msg.answer_photo(FSInputFile(f), caption=current_caption)
+                else:
+                    # Отправляем группу
+                    alb = MediaGroupBuilder(caption=current_caption)
+                    for f in chunk:
+                        if f.endswith('.mp4'):
+                            w, h = get_media_meta(f)
+                            alb.add_video(media=FSInputFile(f), width=w, height=h)
+                        else:
+                            alb.add_photo(media=FSInputFile(f))
+                    await msg.answer_media_group(alb.build())
+                
+                # 3. Анти-флуд задержка: если чанков больше одного, ждем 2 сек между ними
+                if len(chunks) > 1:
+                    await asyncio.sleep(2)
 
         await status.delete()
-    except Exception as e:
-        await status.edit_text(f"❌ {str(e)[:50]}")
-    finally:
-        # Очистка через 2 минуты
-        async def cleanup(): await asyncio.sleep(120); shutil.rmtree(t_dir, ignore_errors=True)
-        asyncio.create_task(cleanup())
 
 async def main():
     os.makedirs(TEMP_BASE_DIR, exist_ok=True)
