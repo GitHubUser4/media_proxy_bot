@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import FSInputFile, Message
 from aiogram.filters import Command
 from aiogram.utils.media_group import MediaGroupBuilder
+from aiogram.exceptions import TelegramRetryAfter
 from playwright.async_api import async_playwright
 from yt_dlp import YoutubeDL
 
@@ -161,49 +162,48 @@ async def handle_insta(msg: Message):
 
         if not final_media: raise Exception("Файлы слишком тяжелые для TG.")
 
-# --- ОТПРАВКА ---
+# --- ОТПРАВКА С ЗАЩИТОЙ ОТ FLOOD ---
         caption = (caption or "")[:1024]
+        chunks = [final_media[i:i + 10] for i in range(0, len(final_media), 10)]
 
-        # 1. Если файл всего один — отправляем как обычно
-        if len(final_media) == 1:
-            f = final_media[0]
-            if f.endswith('.mp4'):
-                w, h = get_media_meta(f)
-                await msg.answer_video(FSInputFile(f), caption=caption, width=w, height=h, supports_streaming=True)
-            else:
-                await msg.answer_photo(FSInputFile(f), caption=caption)
-        
-        # 2. Если файлов много — бьем на чанки по 10 штук
-        else:
-            # Генератор чанков (режет список по 10 элементов)
-            chunks = [final_media[i:i + 10] for i in range(0, len(final_media), 10)]
-
-            for index, chunk in enumerate(chunks):
-                # Текст (caption) прикрепляем только к самому первому чанку
-                current_caption = caption if index == 0 else ""
-                
-                # Если в чанке остался 1 файл (например, 11-й файл в карусели)
-                if len(chunk) == 1:
-                    f = chunk[0]
-                    if f.endswith('.mp4'):
-                        w, h = get_media_meta(f)
-                        await msg.answer_video(FSInputFile(f), caption=current_caption, width=w, height=h)
-                    else:
-                        await msg.answer_photo(FSInputFile(f), caption=current_caption)
-                else:
-                    # Отправляем группу
-                    alb = MediaGroupBuilder(caption=current_caption)
-                    for f in chunk:
-                        if f.endswith('.mp4'):
-                            w, h = get_media_meta(f)
-                            alb.add_video(media=FSInputFile(f), width=w, height=h)
+        for index, chunk in enumerate(chunks):
+            current_caption = caption if index == 0 else ""
+            
+            # Внутренняя функция для повторной попытки при флуде
+            async def send_with_retry(attempts=3):
+                for attempt in range(attempts):
+                    try:
+                        if len(chunk) == 1:
+                            f = chunk[0]
+                            if f.endswith('.mp4'):
+                                w, h = get_media_meta(f)
+                                await msg.answer_video(FSInputFile(f), caption=current_caption, width=w, height=h)
+                            else:
+                                await msg.answer_photo(FSInputFile(f), caption=current_caption)
                         else:
-                            alb.add_photo(media=FSInputFile(f))
-                    await msg.answer_media_group(alb.build())
-                
-                # 3. Анти-флуд задержка: если чанков больше одного, ждем 2 сек между ними
-                if len(chunks) > 1:
-                    await asyncio.sleep(2)
+                            alb = MediaGroupBuilder(caption=current_caption)
+                            for f in chunk:
+                                if f.endswith('.mp4'):
+                                    w, h = get_media_meta(f)
+                                    alb.add_video(media=FSInputFile(f), width=w, height=h)
+                                else:
+                                    alb.add_photo(media=FSInputFile(f))
+                            await msg.answer_media_group(alb.build())
+                        return True # Успешно отправлено
+                    except TelegramRetryAfter as e:
+                        logger.warning(f"Flood limit! Спим {e.retry_after} сек.")
+                        await asyncio.sleep(e.retry_after + 1)
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки чанка: {e}")
+                        break
+                return False
+
+            # Пытаемся отправить чанк
+            success = await send_with_retry()
+            
+            # Если чанков много, делаем паузу ПОБОЛЬШЕ между ними
+            if success and len(chunks) > 1 and index < len(chunks) - 1:
+                await asyncio.sleep(7) # 7 секунд — безопасный интервал для тяжелых паков
 
         await status.delete()
     except Exception as e:
