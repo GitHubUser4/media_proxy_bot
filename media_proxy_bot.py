@@ -14,7 +14,8 @@ from yt_dlp import YoutubeDL
 load_dotenv()
 API_KEY = os.getenv("API_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
-COOKIE_FILE = "instagram_cookies.txt"
+IG_COOKIE_FILE = "instagram_cookies.txt"
+YT_COOKIE_FILE = "youtube_cookies.txt"
 TEMP_BASE_DIR = "downloads"
 MAX_SIZE_BYTES = 50 * 1024 * 1024 
 
@@ -72,9 +73,9 @@ async def fetch_with_playwright(url, temp_dir):
             context = await browser.new_context(viewport={'width': 1280, 'height': 1440})
             
             # Впрыск кук через yt-dlp cookiejar (твой метод)
-            if os.path.exists(COOKIE_FILE):
+            if os.path.exists(IG_COOKIE_FILE):
                 try:
-                    ydl = YoutubeDL({'cookiefile': COOKIE_FILE, 'quiet': True})
+                    ydl = YoutubeDL({'cookiefile': IG_COOKIE_FILE, 'quiet': True})
                     await context.add_cookies([{
                         'name': c.name, 'value': c.value, 'domain': c.domain, 'path': c.path, 'secure': True
                     } for c in ydl.cookiejar])
@@ -116,12 +117,92 @@ async def fetch_with_playwright(url, temp_dir):
 
 # --- ОБРАБОТЧИКИ ---
 
+@dp.message(Command("mp3"))
+async def handle_youtube_mp3(message: Message):
+    parts = message.text.split(maxsplit=1)
+    
+    # 1. ТИХИЕ ПРОВЕРКИ (без логов и сообщений)
+    if len(parts) < 2:
+        return 
+        
+    url = parts[1]
+    if "youtube.com" not in url and "youtu.be" not in url:
+        return
+
+    # Если дошли сюда — значит всё ок, начинаем логировать и работать
+    logger.info(f"Начата загрузка MP3: {url}")
+    status_msg = await message.answer("🎵 Тяну звук в максимальном качестве...")
+    
+    t_dir = os.path.join(TEMP_BASE_DIR, f"yt_{message.from_user.id}_{int(time.time())}")
+    os.makedirs(t_dir, exist_ok=True)
+
+    try:
+        def download_audio():
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320',
+                }],
+                'outtmpl': os.path.join(t_dir, '%(title)s.%(ext)s'),
+                'quiet': True,
+                'cookiefile': YT_COOKIE_FILE if os.path.exists(YT_COOKIE_FILE) else None 
+            }
+            with YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=True)
+
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, download_audio)
+        
+        downloaded_files = [f for f in os.listdir(t_dir) if f.endswith('.mp3')]
+        if not downloaded_files:
+            raise Exception("Не удалось конвертировать аудио.")
+
+        mp3_path = os.path.join(t_dir, downloaded_files[0])
+        
+        file_size = os.path.getsize(mp3_path)
+        if file_size > 50 * 1024 * 1024:
+            await status_msg.edit_text(f"⚠️ Трек слишком длинный ({file_size // (1024**2)} МБ). Telegram не пропустит больше 50 МБ.")
+            return
+
+        # 2. ПАРСИНГ МЕТАДАННЫХ (Артист и Название)
+        raw_title = info.get('title', 'Unknown Title')
+        if " - " in raw_title:
+            # Разбиваем только по первому вхождению " - "
+            performer, title = raw_title.split(" - ", 1)
+        else:
+            # Фолбэк, если дефиса нет: берем автора канала и всё название
+            performer = info.get('uploader', 'YouTube')
+            title = raw_title
+
+        await status_msg.edit_text("📤 Отправляю трек...")
+        
+        await message.answer_audio(
+            FSInputFile(mp3_path),
+            caption=f"🎧 <a href='{url}'>Источник</a>",
+            parse_mode="HTML",
+            title=title.strip(),        # .strip() убирает случайные пробелы по краям
+            performer=performer.strip()
+        )
+        await status_msg.delete()
+
+    except Exception as e:
+        logger.error(f"Ошибка YT MP3: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:50]}")
+    finally:
+        async def cleanup():
+            await asyncio.sleep(60)
+            shutil.rmtree(t_dir, ignore_errors=True)
+        asyncio.create_task(cleanup())
+
 @dp.message(Command("status"))
 async def cmd_status(msg: Message):
     if msg.from_user.id != ADMIN_ID: return
     ram, disk = psutil.virtual_memory(), psutil.disk_usage('/')
-    c_time = datetime.fromtimestamp(os.path.getmtime(COOKIE_FILE)).strftime('%d.%m %H:%M') if os.path.exists(COOKIE_FILE) else "None"
-    await msg.answer(f"<b>📊 Статус:</b>\nRAM: {ram.percent}%\nDisk free: {disk.free // 10**9}GB\nCookies: {c_time}", parse_mode="HTML")
+    ig_time = datetime.fromtimestamp(os.path.getmtime(IG_COOKIE_FILE)).strftime('%d.%m %H:%M') if os.path.exists(IG_COOKIE_FILE) else "None"
+    yt_time = datetime.fromtimestamp(os.path.getmtime(YT_COOKIE_FILE)).strftime('%d.%m %H:%M') if os.path.exists(YT_COOKIE_FILE) else "None"
+    await msg.answer(f"<b>📊 Статус:</b>\nRAM: {ram.percent}%\nDisk free: {disk.free // 10**9}GB\nInsta_cookies: {ig_time}\nYoutube_cookies: {yt_time}", parse_mode="HTML")
 
 @dp.message(F.text.contains("instagram.com"))
 async def handle_insta(msg: Message):
@@ -139,7 +220,7 @@ async def handle_insta(msg: Message):
         await status.edit_text("🔍 Метод A...")
         try:
             loop = asyncio.get_event_loop()
-            info = await loop.run_in_executor(None, lambda: YoutubeDL({'outtmpl': f'{t_dir}/%(id)s.%(ext)s', 'quiet': True, 'cookiefile': COOKIE_FILE}).extract_info(clean_url, download=True))
+            info = await loop.run_in_executor(None, lambda: YoutubeDL({'outtmpl': f'{t_dir}/%(id)s.%(ext)s', 'quiet': True, 'cookiefile': IG_COOKIE_FILE}).extract_info(clean_url, download=True))
             files = [os.path.join(t_dir, f) for f in os.listdir(t_dir)]
             caption = info.get('description') or info.get('title') or ""
         except: pass
