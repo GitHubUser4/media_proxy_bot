@@ -133,7 +133,7 @@ async def handle_youtube_mp3(message: Message):
     try:
         # --- 1. ПРЕ-ЧЕК: Получаем инфо БЕЗ скачивания ---
         def get_video_info():
-            opts = {'quiet': True, 'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None}
+            opts = {'quiet': True, 'cookiefile': YT_COOKIE_FILE if os.path.exists(YT_COOKIE_FILE) else None}
             with YoutubeDL(opts) as ydl:
                 return ydl.extract_info(url, download=False)
 
@@ -163,7 +163,7 @@ async def handle_youtube_mp3(message: Message):
                     {'key': 'FFmpegThumbnailsConvertor', 'format': 'jpg'}
                 ],
                 'quiet': True,
-                'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None
+                'cookiefile': YT_COOKIE_FILE if os.path.exists(YT_COOKIE_FILE) else None
             }
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
