@@ -120,70 +120,75 @@ async def fetch_with_playwright(url, temp_dir):
 @dp.message(Command("mp3"))
 async def handle_youtube_mp3(message: Message):
     parts = message.text.split(maxsplit=1)
-    
-    # 1. ТИХИЕ ПРОВЕРКИ (без логов и сообщений)
     if len(parts) < 2:
-        return 
-        
+        await message.answer("⚠️ Отправь ссылку: `/mp3 https://youtu.be/...`", parse_mode="Markdown")
+        return
+
     url = parts[1]
     if "youtube.com" not in url and "youtu.be" not in url:
         return
 
-    # Если дошли сюда — значит всё ок, начинаем логировать и работать
-    logger.info(f"Начата загрузка MP3: {url}")
-    status_msg = await message.answer("🎵 Тяну звук в максимальном качестве...")
-    
-    t_dir = os.path.join(TEMP_BASE_DIR, f"yt_{message.from_user.id}_{int(time.time())}")
-    os.makedirs(t_dir, exist_ok=True)
+    status_msg = await message.answer("🔍 Проверяю размер аудио...")
 
     try:
+        # --- 1. ПРЕ-ЧЕК: Получаем инфо БЕЗ скачивания ---
+        def get_video_info():
+            opts = {'quiet': True, 'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None}
+            with YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, get_video_info)
+
+        # Проверяем длительность (20 минут = 1200 секунд)
+        duration = info.get('duration', 0)
+        if duration > 1200:
+            await status_msg.edit_text(f"🛑 Видео идет {duration // 60} мин. MP3 в качестве 320kbps будет весить больше 50 МБ. Бот не станет это качать.")
+            return
+
+        # --- 2. СКАЧИВАНИЕ С ОБЛОЖКОЙ ---
+        await status_msg.edit_text("🎵 Скачиваю и конвертирую в MP3...")
+        t_dir = os.path.join(TEMP_BASE_DIR, f"yt_{message.from_user.id}_{int(time.time())}")
+        os.makedirs(t_dir, exist_ok=True)
+
         def download_audio():
             ydl_opts = {
                 'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '320',
-                }],
                 'outtmpl': os.path.join(t_dir, '%(title)s.%(ext)s'),
+                'writethumbnail': True, # Запрашиваем обложку
+                'postprocessors': [
+                    # Перегоняем в MP3 320k
+                    {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'},
+                    # YouTube отдает обложки в webp, перегоняем их в jpg для Telegram
+                    {'key': 'FFmpegThumbnailsConvertor', 'format': 'jpg'}
+                ],
                 'quiet': True,
-                'cookiefile': YT_COOKIE_FILE if os.path.exists(YT_COOKIE_FILE) else None 
+                'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None
             }
             with YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=True)
+                ydl.extract_info(url, download=True)
 
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, download_audio)
-        
-        downloaded_files = [f for f in os.listdir(t_dir) if f.endswith('.mp3')]
-        if not downloaded_files:
+        await loop.run_in_executor(None, download_audio)
+
+        # --- 3. ПОИСК ФАЙЛОВ И ОТПРАВКА ---
+        mp3_files = [f for f in os.listdir(t_dir) if f.endswith('.mp3')]
+        if not mp3_files:
             raise Exception("Не удалось конвертировать аудио.")
+        mp3_path = os.path.join(t_dir, mp3_files[0])
 
-        mp3_path = os.path.join(t_dir, downloaded_files[0])
-        
-        file_size = os.path.getsize(mp3_path)
-        if file_size > 50 * 1024 * 1024:
-            await status_msg.edit_text(f"⚠️ Трек слишком длинный ({file_size // (1024**2)} МБ). Telegram не пропустит больше 50 МБ.")
-            return
-
-        # 2. ПАРСИНГ МЕТАДАННЫХ (Артист и Название)
-        raw_title = info.get('title', 'Unknown Title')
-        if " - " in raw_title:
-            # Разбиваем только по первому вхождению " - "
-            performer, title = raw_title.split(" - ", 1)
-        else:
-            # Фолбэк, если дефиса нет: берем автора канала и всё название
-            performer = info.get('uploader', 'YouTube')
-            title = raw_title
+        # Ищем скачанную обложку
+        thumb_files = [f for f in os.listdir(t_dir) if f.endswith('.jpg')]
+        thumb_path = os.path.join(t_dir, thumb_files[0]) if thumb_files else None
+        thumb_input = FSInputFile(thumb_path) if thumb_path else None
 
         await status_msg.edit_text("📤 Отправляю трек...")
         
         await message.answer_audio(
             FSInputFile(mp3_path),
-            caption=f"🎧 <a href='{url}'>Источник</a>",
-            parse_mode="HTML",
-            title=title.strip(),        # .strip() убирает случайные пробелы по краям
-            performer=performer.strip()
+            caption="🎧 Аудио с YouTube",
+            title=info.get('title', 'Unknown Title'),
+            performer=info.get('uploader', 'YouTube'),
+            thumbnail=thumb_input # Прикрепляем обложку к файлу
         )
         await status_msg.delete()
 
@@ -191,10 +196,11 @@ async def handle_youtube_mp3(message: Message):
         logger.error(f"Ошибка YT MP3: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:50]}")
     finally:
-        async def cleanup():
-            await asyncio.sleep(60)
-            shutil.rmtree(t_dir, ignore_errors=True)
-        asyncio.create_task(cleanup())
+        if 't_dir' in locals():
+            async def cleanup():
+                await asyncio.sleep(60)
+                shutil.rmtree(t_dir, ignore_errors=True)
+            asyncio.create_task(cleanup())
 
 @dp.message(Command("status"))
 async def cmd_status(msg: Message):
