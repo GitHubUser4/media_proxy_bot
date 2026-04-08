@@ -250,11 +250,24 @@ async def handle_insta(msg: Message):
         if not final_media: raise Exception("Файлы слишком тяжелые для TG.")
 
 # --- ОТПРАВКА С ЗАЩИТОЙ ОТ FLOOD ---
-        caption = (caption or "")[:1024]
+        from aiogram.exceptions import TelegramRetryAfter
+        import asyncio
+
+        # 1. Формируем предупреждение
+        warning_text = "🔞 <b>Материал 18+</b>\n\n"
+        
+        # 2. Высчитываем, сколько символов осталось для оригинального текста
+        max_text_length = 1024 - len(warning_text)
+        original_text = (caption or "")[:max_text_length]
+        
+        # 3. Склеиваем плашку и текст
+        final_caption = warning_text + original_text
+
         chunks = [final_media[i:i + 10] for i in range(0, len(final_media), 10)]
 
         for index, chunk in enumerate(chunks):
-            current_caption = caption if index == 0 else ""
+            # Передаем обновленный текст только в первый чанк
+            current_caption = final_caption if index == 0 else ""
             
             # Внутренняя функция для повторной попытки при флуде
             async def send_with_retry(attempts=3):
