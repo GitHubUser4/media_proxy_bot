@@ -250,11 +250,9 @@ async def handle_insta(msg: Message):
         if not final_media: raise Exception("Файлы слишком тяжелые для TG.")
 
 # --- ОТПРАВКА С ЗАЩИТОЙ ОТ FLOOD ---
-        from aiogram.exceptions import TelegramRetryAfter
-        import asyncio
 
         # 1. Формируем предупреждение
-        warning_text = "🔞 <b>Материал 18+</b>\n\n"
+        warning_text = "🔞 **Материал 18+**\n\n"
         
         # 2. Высчитываем, сколько символов осталось для оригинального текста
         max_text_length = 1024 - len(warning_text)
