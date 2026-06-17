@@ -1,4 +1,4 @@
-import os, asyncio, logging, shutil, requests, time, subprocess, json, re, psutil, platform
+import os, asyncio, logging, shutil, requests, time, subprocess, json, re, psutil, platform, math
 from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
 from datetime import datetime
@@ -12,12 +12,16 @@ from yt_dlp import YoutubeDL
 
 # --- КОНФИГУРАЦИЯ ---
 load_dotenv()
-API_KEY = os.getenv("API_TOKEN")
+API_KEY = os.getenv("API_KEY") or os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 IG_COOKIE_FILE = "instagram_cookies.txt"
 YT_COOKIE_FILE = "youtube_cookies.txt"
 TEMP_BASE_DIR = "downloads"
-MAX_SIZE_BYTES = 50 * 1024 * 1024 
+
+# Динамические лимиты из .env (с дефолтными значениями)
+MAX_SIZE_BYTES = int(os.getenv("MAX_VIDEO_SIZE_MB", 50)) * 1024 * 1024 
+MAX_YT_DURATION_SEC = int(os.getenv("MAX_YT_DURATION_SEC", 1500))
+MAX_VIDEO_PARTS = 3 # Максимальное количество кусков, на которые режем одно видео
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,6 +57,44 @@ def process_video(input_p, output_p):
         return output_p
     except: return input_p
 
+def split_large_video(video_path, output_dir, max_parts=3):
+    """Нарезка тяжелого видео на части по ключевым кадрам без потери качества."""
+    file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    
+    if file_size_mb <= (MAX_SIZE_BYTES / (1024 * 1024)):
+        return [video_path]
+        
+    parts_needed = math.ceil(file_size_mb / 45)
+    
+    if parts_needed > max_parts:
+        logger.warning(f"Видео слишком тяжелое: {file_size_mb:.2f} MB требует {parts_needed} частей.")
+        return None
+        
+    try:
+        cmd_duration = f'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "{video_path}"'
+        duration = float(subprocess.check_output(cmd_duration, shell=True).decode().strip())
+        
+        segment_time = math.ceil(duration / parts_needed)
+        output_pattern = os.path.join(output_dir, "part_%03d.mp4")
+        
+        ffmpeg_cmd = (
+            f'ffmpeg -y -i "{video_path}" -c copy -f segment '
+            f'-segment_time {segment_time} -reset_timestamps 1 "{output_pattern}"'
+        )
+        
+        subprocess.run(ffmpeg_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        
+        generated_files = sorted([
+            os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("part_") and f.endswith(".mp4")
+        ])
+        
+        if generated_files:
+            return generated_files
+    except Exception as e:
+        logger.error(f"Ошибка при нарезке видео: {e}")
+        
+    return [video_path]
+
 async def safe_download(url, path):
     """Скачивание файла с таймаутом."""
     try:
@@ -69,10 +111,12 @@ async def fetch_with_playwright(url, temp_dir):
     """План Б: Эмуляция браузера."""
     async with browser_semaphore:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"]
+            )
             context = await browser.new_context(viewport={'width': 1280, 'height': 1440})
             
-            # Впрыск кук через yt-dlp cookiejar (твой метод)
             if os.path.exists(IG_COOKIE_FILE):
                 try:
                     ydl = YoutubeDL({'cookiefile': IG_COOKIE_FILE, 'quiet': True})
@@ -91,11 +135,10 @@ async def fetch_with_playwright(url, temp_dir):
                 if "login" in page.url:
                     return [], "Нужны свежие куки (Login page detected)"
 
-                # Извлечение текста
                 caption = await page.evaluate("() => document.querySelector('article h1')?.innerText || ''")
                 
                 all_urls = set()
-                for _ in range(12): # Instagram обычно не дает больше 10 слайдов
+                for _ in range(12):
                     elements = await page.query_selector_all("video, img")
                     for el in elements:
                         box = await el.bounding_box()
@@ -131,7 +174,6 @@ async def handle_youtube_mp3(message: Message):
     status_msg = await message.answer("🔍 Проверяю размер аудио...")
 
     try:
-        # --- 1. ПРЕ-ЧЕК: Получаем инфо БЕЗ скачивания ---
         def get_video_info():
             opts = {'quiet': True, 'cookiefile': YT_COOKIE_FILE if os.path.exists(YT_COOKIE_FILE) else None}
             with YoutubeDL(opts) as ydl:
@@ -140,13 +182,14 @@ async def handle_youtube_mp3(message: Message):
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, get_video_info)
 
-        # Проверяем длительность (20 минут = 1200 секунд)
         duration = info.get('duration', 0)
-        if duration > 1200:
-            await status_msg.edit_text(f"🛑 Видео идет {duration // 60} мин. MP3 в качестве 320kbps будет весить больше 50 МБ. Бот не станет это качать.")
+        if duration > MAX_YT_DURATION_SEC:
+            await status_msg.edit_text(
+                f"🛑 Видео идет {duration // 60} мин. Лимит конфига — {MAX_YT_DURATION_SEC // 60} мин. "
+                f"Бот не станет это качать."
+            )
             return
 
-        # --- 2. СКАЧИВАНИЕ С ОБЛОЖКОЙ ---
         await status_msg.edit_text("🎵 Скачиваю и конвертирую в MP3...")
         t_dir = os.path.join(TEMP_BASE_DIR, f"yt_{message.from_user.id}_{int(time.time())}")
         os.makedirs(t_dir, exist_ok=True)
@@ -155,11 +198,9 @@ async def handle_youtube_mp3(message: Message):
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': os.path.join(t_dir, '%(title)s.%(ext)s'),
-                'writethumbnail': True, # Запрашиваем обложку
+                'writethumbnail': True,
                 'postprocessors': [
-                    # Перегоняем в MP3 320k
                     {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'},
-                    # YouTube отдает обложки в webp, перегоняем их в jpg для Telegram
                     {'key': 'FFmpegThumbnailsConvertor', 'format': 'jpg'}
                 ],
                 'quiet': True,
@@ -170,13 +211,11 @@ async def handle_youtube_mp3(message: Message):
 
         await loop.run_in_executor(None, download_audio)
 
-        # --- 3. ПОИСК ФАЙЛОВ И ОТПРАВКА ---
         mp3_files = [f for f in os.listdir(t_dir) if f.endswith('.mp3')]
         if not mp3_files:
             raise Exception("Не удалось конвертировать аудио.")
         mp3_path = os.path.join(t_dir, mp3_files[0])
 
-        # Ищем скачанную обложку
         thumb_files = [f for f in os.listdir(t_dir) if f.endswith('.jpg')]
         thumb_path = os.path.join(t_dir, thumb_files[0]) if thumb_files else None
         thumb_input = FSInputFile(thumb_path) if thumb_path else None
@@ -188,7 +227,7 @@ async def handle_youtube_mp3(message: Message):
             caption="🎧 Аудио с YouTube",
             title=info.get('title', 'Unknown Title'),
             performer=info.get('uploader', 'YouTube'),
-            thumbnail=thumb_input # Прикрепляем обложку к файлу
+            thumbnail=thumb_input
         )
         await status_msg.delete()
 
@@ -196,7 +235,7 @@ async def handle_youtube_mp3(message: Message):
         logger.error(f"Ошибка YT MP3: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:50]}")
     finally:
-        if 't_dir' in locals():
+        if 't_dir' in locals() and os.path.exists(t_dir):
             async def cleanup():
                 await asyncio.sleep(60)
                 shutil.rmtree(t_dir, ignore_errors=True)
@@ -222,7 +261,6 @@ async def handle_insta(msg: Message):
 
     try:
         files, caption = [], ""
-        # План А
         await status.edit_text("🔍 Метод A...")
         try:
             loop = asyncio.get_event_loop()
@@ -231,43 +269,39 @@ async def handle_insta(msg: Message):
             caption = info.get('description') or info.get('title') or ""
         except: pass
 
-        # План Б
         if not files:
             await status.edit_text("🌐 Метод Б...")
             files, caption = await fetch_with_playwright(clean_url, t_dir)
 
         if not files: raise Exception("Контент не найден.")
 
-        # Обработка и фильтрация размера
-        await status.edit_text("⚙️ Финализация...")
+        await status.edit_text("⚙️ Финализация и нарезка...")
         final_media = []
         for f in files:
-            if os.path.getsize(f) > MAX_SIZE_BYTES: continue
+            # Если это видео — проверяем вес и при необходимости режем
             if f.lower().endswith(('.mp4', '.mov')):
-                f = process_video(f, f"{f}_fixed.mp4")
-            final_media.append(f)
+                parts = split_large_video(f, t_dir, MAX_VIDEO_PARTS)
+                if parts:
+                    final_media.extend(parts)
+                else:
+                    logger.warning(f"Файл {f} пропущен, так как не может быть порезан (превышен лимит кусков).")
+            # Если это картинка — просто проверяем, чтобы не весила больше 50 МБ
+            else:
+                if os.path.getsize(f) <= MAX_SIZE_BYTES:
+                    final_media.append(f)
 
         if not final_media: raise Exception("Файлы слишком тяжелые для TG.")
 
-# --- ОТПРАВКА С ЗАЩИТОЙ ОТ FLOOD ---
-
-        # 1. Формируем предупреждение
         warning_text = "🔞 Материал 18+\n\n"
-        
-        # 2. Высчитываем, сколько символов осталось для оригинального текста
         max_text_length = 1024 - len(warning_text)
         original_text = (caption or "")[:max_text_length]
-        
-        # 3. Склеиваем плашку и текст
         final_caption = warning_text + original_text
 
         chunks = [final_media[i:i + 10] for i in range(0, len(final_media), 10)]
 
         for index, chunk in enumerate(chunks):
-            # Передаем обновленный текст только в первый чанк
             current_caption = final_caption if index == 0 else ""
             
-            # Внутренняя функция для повторной попытки при флуде
             async def send_with_retry(attempts=3):
                 for attempt in range(attempts):
                     try:
@@ -280,14 +314,16 @@ async def handle_insta(msg: Message):
                                 await msg.answer_photo(FSInputFile(f), caption=current_caption)
                         else:
                             alb = MediaGroupBuilder(caption=current_caption)
-                            for f in chunk:
+                            for i, f in enumerate(chunk):
                                 if f.endswith('.mp4'):
                                     w, h = get_media_meta(f)
-                                    alb.add_video(media=FSInputFile(f), width=w, height=h)
+                                    # Если файл был порезан, добавляем подпись "Часть X"
+                                    title = f"Часть {i+1}" if "part_" in f else None
+                                    alb.add_video(media=FSInputFile(f), width=w, height=h, title=title)
                                 else:
                                     alb.add_photo(media=FSInputFile(f))
                             await msg.answer_media_group(alb.build())
-                        return True # Успешно отправлено
+                        return True 
                     except TelegramRetryAfter as e:
                         logger.warning(f"Flood limit! Спим {e.retry_after} сек.")
                         await asyncio.sleep(e.retry_after + 1)
@@ -296,19 +332,18 @@ async def handle_insta(msg: Message):
                         break
                 return False
 
-            # Пытаемся отправить чанк
             success = await send_with_retry()
             
-            # Если чанков много, делаем паузу ПОБОЛЬШЕ между ними
             if success and len(chunks) > 1 and index < len(chunks) - 1:
-                await asyncio.sleep(7) # 7 секунд — безопасный интервал для тяжелых паков
+                await asyncio.sleep(7) 
 
         await status.delete()
     except Exception as e:
         await status.edit_text(f"❌ {str(e)[:50]}")
     finally:
-        # Очистка через 2 минуты
-        async def cleanup(): await asyncio.sleep(120); shutil.rmtree(t_dir, ignore_errors=True)
+        async def cleanup(): 
+            await asyncio.sleep(120)
+            shutil.rmtree(t_dir, ignore_errors=True)
         asyncio.create_task(cleanup())
 
 async def main():
