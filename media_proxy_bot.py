@@ -12,7 +12,7 @@ from yt_dlp import YoutubeDL
 
 # --- КОНФИГУРАЦИЯ ---
 load_dotenv()
-API_KEY = os.getenv("API_KEY") or os.getenv("BOT_TOKEN")
+API_KEY = os.getenv("API_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 IG_COOKIE_FILE = "instagram_cookies.txt"
 YT_COOKIE_FILE = "youtube_cookies.txt"
