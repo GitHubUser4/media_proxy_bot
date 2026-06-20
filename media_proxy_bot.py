@@ -199,6 +199,7 @@ async def handle_youtube_mp3(message: Message):
                 'format': 'bestaudio/best',
                 'outtmpl': os.path.join(t_dir, '%(title)s.%(ext)s'),
                 'writethumbnail': True,
+				'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
                 'postprocessors': [
                     {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'},
                     {'key': 'FFmpegThumbnailsConvertor', 'format': 'jpg'}
