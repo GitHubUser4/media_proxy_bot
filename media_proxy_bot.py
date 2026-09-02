@@ -287,10 +287,11 @@ async def handle_insta(msg: Message):
         final_media = []
         for f in files:
             # Если это видео — проверяем вес и при необходимости режем
-            if f.lower().endswith(('.mp4', '.mov')):
-                parts = split_large_video(f, t_dir, MAX_VIDEO_PARTS)
-                if parts:
-                    final_media.extend(parts)
+			if f.lower().endswith(('.mp4', '.mov')):
+			    fixed_file = process_video(f)
+			    parts = split_large_video(fixed_file, t_dir, MAX_VIDEO_PARTS)
+			    if parts:
+			        final_media.extend(parts)
                 else:
                     logger.warning(f"Файл {f} пропущен, так как не может быть порезан (превышен лимит кусков).")
             # Если это картинка — просто проверяем, чтобы не весила больше 50 МБ
