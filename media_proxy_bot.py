@@ -44,20 +44,25 @@ def get_media_meta(file_path):
     except: pass
     return None, None
 
-def process_video(input_p, output_p):
-    """Оптимизация видео для гарантированной кроссплатформенности."""
+def process_video(input_p):
+    """Принудительная нормализация видео под требования iOS/macOS (AVFoundation)."""
+    out_p = input_p.rsplit('.', 1)[0] + '_fixed.mp4'
     cmd = [
         'ffmpeg', '-y', '-i', input_p,
-        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', 
-        '-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '26', '-preset', 'superfast', 
-        '-acodec', 'aac', '-b:a', '128k', '-movflags', '+faststart', output_p
+        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        '-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-profile:v', 'main',
+        '-crf', '26', '-preset', 'superfast',
+        '-acodec', 'aac', '-b:a', '128k',
+        '-movflags', '+faststart', out_p
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
-        return output_p
+        subprocess.run(cmd, check=True, capture_output=True, timeout=90)
+        if os.path.exists(out_p):
+            os.remove(input_p)
+            return out_p
     except Exception as e:
-        logger.error(f"FFmpeg error: {e}")
-        return input_p
+        logger.error(f"FFmpeg process error: {e}")
+    return input_p
 
 def split_large_video(video_path, output_dir, max_parts=3):
     """Нарезка тяжелого видео на части по ключевым кадрам без потери качества."""
