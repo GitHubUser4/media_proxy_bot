@@ -57,8 +57,8 @@ def get_media_meta(file_path):
     return None, None
 
 
-def process_video(input_p):
-    """Принудительная нормализация видео под требования iOS/macOS (AVFoundation)."""
+async def process_video(input_p):
+    """Асинхронная нормализация видео под iOS, не блокирующая event loop бота."""
     out_p = input_p.rsplit(".", 1)[0] + "_fixed.mp4"
     cmd = [
         "ffmpeg",
@@ -76,7 +76,7 @@ def process_video(input_p):
         "-crf",
         "26",
         "-preset",
-        "superfast",
+        "ultrafast",  # 'ultrafast' ускорит процесс на VPS
         "-acodec",
         "aac",
         "-b:a",
@@ -86,12 +86,19 @@ def process_video(input_p):
         out_p,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=90)
-        if os.path.exists(out_p):
+        # Запускаем ffmpeg в отдельном асинхронном подпроцессе
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode == 0 and os.path.exists(out_p):
             os.remove(input_p)
             return out_p
+        else:
+            logger.error(f"FFmpeg error: {stderr.decode()}")
     except Exception as e:
-        logger.error(f"FFmpeg process error: {e}")
+        logger.error(f"FFmpeg execution failed: {e}")
     return input_p
 
 
@@ -409,7 +416,7 @@ async def handle_insta(msg: Message):
         for f in files:
             # Если это видео — конвертируем под профиль iOS и при необходимости режем
             if f.lower().endswith((".mp4", ".mov")):
-                fixed_file = process_video(f)
+                fixed_file = await process_video(f)  # Добавили await
                 parts = split_large_video(fixed_file, t_dir, MAX_VIDEO_PARTS)
                 if parts:
                     final_media.extend(parts)
