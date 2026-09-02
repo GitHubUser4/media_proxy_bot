@@ -45,17 +45,19 @@ def get_media_meta(file_path):
     return None, None
 
 def process_video(input_p, output_p):
-    """Оптимизация видео для Telegram."""
+    """Оптимизация видео для гарантированной кроссплатформенности."""
     cmd = [
         'ffmpeg', '-y', '-i', input_p,
         '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', 
-        '-vcodec', 'libx264', '-crf', '28', '-preset', 'superfast', 
-        '-acodec', 'aac', '-b:a', '96k', '-movflags', '+faststart', output_p
+        '-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '26', '-preset', 'superfast', 
+        '-acodec', 'aac', '-b:a', '128k', '-movflags', '+faststart', output_p
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=60)
         return output_p
-    except: return input_p
+    except Exception as e:
+        logger.error(f"FFmpeg error: {e}")
+        return input_p
 
 def split_large_video(video_path, output_dir, max_parts=3):
     """Нарезка тяжелого видео на части по ключевым кадрам без потери качества."""
