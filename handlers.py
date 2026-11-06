@@ -180,15 +180,18 @@ async def handle_insta(msg: Message):
 
             try:
                 loop = asyncio.get_event_loop()
-                info = await loop.run_in_executor(
-                    None,
-                    lambda: YoutubeDL(
-                        {
-                            "outtmpl": f"{t_dir}/%(id)s.%(ext)s",
-                            "quiet": True,
-                            "cookiefile": IG_COOKIE_FILE,
-                        }
-                    ).extract_info(clean_url, download=True),
+                info = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: YoutubeDL(
+                            {
+                                "outtmpl": f"{t_dir}/%(id)s.%(ext)s",
+                                "quiet": True,
+                                "cookiefile": IG_COOKIE_FILE,
+                            }
+                        ).extract_info(clean_url, download=True),
+                    ),
+                    timeout=150,
                 )
                 files = [os.path.join(t_dir, f) for f in os.listdir(t_dir)]
                 caption = info.get("description") or info.get("title") or ""
@@ -197,7 +200,13 @@ async def handle_insta(msg: Message):
 
             if not files:
                 await status.edit_text("🌐 Метод Б...")
-                files, caption = await fetch_with_playwright(clean_url, t_dir)
+                try:
+                    files, caption = await asyncio.wait_for(
+                        fetch_with_playwright(clean_url, t_dir), timeout=180
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("Playwright fetch timeout")
+                    files, caption = [], ""
 
             if not files:
                 raise Exception("Контент не найден.")
@@ -227,7 +236,20 @@ async def handle_insta(msg: Message):
             original_text = (caption or "")[:max_text_length]
             final_caption = warning_text + original_text
 
-            chunks = [final_media[i : i + 10] for i in range(0, len(final_media), 10)]
+            # Chunk by total size, not only by count: Telegram Bot API rejects
+            # a single request over ~50 MB, so a media group must stay under it
+            MAX_CHUNK_BYTES = 45 * 1024 * 1024
+            chunks = []
+            _chunk, _chunk_size = [], 0
+            for _f in final_media:
+                _f_size = os.path.getsize(_f)
+                if _chunk and (len(_chunk) >= 10 or _chunk_size + _f_size > MAX_CHUNK_BYTES):
+                    chunks.append(_chunk)
+                    _chunk, _chunk_size = [], 0
+                _chunk.append(_f)
+                _chunk_size += _f_size
+            if _chunk:
+                chunks.append(_chunk)
 
             for index, chunk in enumerate(chunks):
                 current_caption = final_caption if index == 0 else ""
