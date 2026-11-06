@@ -31,7 +31,7 @@ async def process_video(input_p):
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-vcodec", "libx264", "-pix_fmt", "yuv420p",
         "-profile:v", "main", "-crf", "26",
-        "-preset", "ultrafast",
+        "-preset", "veryfast",
         "-acodec", "aac", "-b:a", "128k",
         "-movflags", "+faststart", out_p,
     ]
