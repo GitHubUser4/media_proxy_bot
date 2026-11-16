@@ -76,7 +76,13 @@ async def fetch_with_playwright(url, temp_dir):
 
                     next_btn = await page.query_selector("button[aria-label*='Next'], button[aria-label*='Далее']")
                     if next_btn and await next_btn.is_visible():
-                        await next_btn.click()
+                        try:
+                            await next_btn.click(timeout=5000)
+                        except Exception:
+                            try:
+                                await next_btn.evaluate("n => n.click()")
+                            except Exception:
+                                break
                         await asyncio.sleep(1.5)
                     elif not new_found:
                         break
