@@ -54,38 +54,66 @@ async def fetch_with_playwright(url, temp_dir):
 
                 caption = await page.evaluate("() => document.querySelector('article h1')?.innerText || ''")
                 all_urls = set()
+                seen_paths = set()
                 loop = asyncio.get_event_loop()
+                scan_js = (
+                    "() => [...document.querySelectorAll('video, img')].map(n => {"
+                    " const r = n.getBoundingClientRect();"
+                    " return {tag: n.tagName, src: n.currentSrc || n.src || '', w: r.width, y: r.y};"
+                    " }).filter(m => m.src && m.w >= 300 && m.y <= 700)"
+                )
+                stalls = 0
 
                 for _ in range(12):
-                    media = await page.evaluate(
-                        "() => [...document.querySelectorAll('video, img')].map(n => {"
-                        " const r = n.getBoundingClientRect();"
-                        " return {tag: n.tagName, src: n.currentSrc || n.src || '', w: r.width, y: r.y};"
-                        " }).filter(m => m.src && m.w >= 300 && m.y <= 700)"
-                    )
+                    media = await page.evaluate(scan_js)
+                    if media:
+                        max_w = max(m["w"] for m in media)
+                        media = [m for m in media if m["w"] >= 0.85 * max_w]
                     new_found = False
                     for m in media:
-                        if m["src"] in all_urls:
+                        path_key = m["src"].split("?")[0]
+                        if m["src"] in all_urls or path_key in seen_paths:
                             continue
                         all_urls.add(m["src"])
+                        seen_paths.add(path_key)
                         new_found = True
                         ext = "mp4" if m["tag"] == "VIDEO" else "jpg"
                         f_path = os.path.join(temp_dir, f"file_{len(all_urls)}.{ext}")
                         if await loop.run_in_executor(None, _download_sync, m["src"], f_path):
                             saved_files.append(f_path)
 
+                    if new_found:
+                        stalls = 0
+
                     next_btn = await page.query_selector("button[aria-label*='Next'], button[aria-label*='Далее']")
                     if next_btn and await next_btn.is_visible():
+                        clicked = False
                         try:
-                            await next_btn.click(timeout=5000)
+                            await next_btn.evaluate("n => n.click()")
+                            clicked = True
                         except Exception:
                             try:
-                                await next_btn.evaluate("n => n.click()")
+                                next_btn = await page.query_selector("button[aria-label*='Next'], button[aria-label*='Далее']")
+                                if next_btn:
+                                    await next_btn.click(timeout=5000)
+                                    clicked = True
                             except Exception:
+                                pass
+                        if clicked:
+                            await asyncio.sleep(2.5)
+                        else:
+                            stalls += 1
+                            if stalls >= 2:
                                 break
+                            await asyncio.sleep(1.0)
+                    elif new_found:
+                        await asyncio.sleep(1.0)
+                    else:
+                        stalls += 1
+                        if stalls >= 2:
+                            break
                         await asyncio.sleep(1.5)
-                    elif not new_found:
-                        break
+
             finally:
                 try:
                     await asyncio.wait_for(browser.close(), timeout=15)
